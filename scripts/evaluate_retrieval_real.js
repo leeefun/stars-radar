@@ -53,6 +53,40 @@ function loadHarvested(root) {
   return harvested
 }
 
+/**
+ * Renamed repositories keep their old full name in the human-labelled benchmark, while the corpus
+ * stores the current one. `data/benchmark-aliases.json` maps the old name to the new one so a
+ * rename cannot masquerade as a retrieval miss.
+ */
+export function canonicalRepo(name, aliases = {}) {
+  const key = String(name || '').toLowerCase()
+  return aliases[key] || key
+}
+
+export function canonicalExpected(list, aliases = {}) {
+  return (list || []).map(name => canonicalRepo(name, aliases))
+}
+
+/** 1-based position of the first relevant repository in the returned order, or null. */
+export function goldRank(returned, relevant) {
+  const wanted = relevant instanceof Set ? relevant : new Set((relevant || []).map(v => String(v).toLowerCase()))
+  const index = (returned || []).findIndex(repo => wanted.has(String(repo).toLowerCase()))
+  return index >= 0 ? index + 1 : null
+}
+
+export function corpusRepoKeys(catalog = {}, assetIndex = {}) {
+  const keys = new Set()
+  for (const source of [catalog.repos, assetIndex.repos]) {
+    for (const [key, value] of Object.entries(source || {})) {
+      keys.add(key.toLowerCase())
+      if (value?.repo)
+        keys.add(String(value.repo).toLowerCase())
+    }
+  }
+  return keys
+}
+
+
 function loadVectors(root) {
   const indexPath = path.resolve(root, EMBEDDINGS_INDEX_KEY)
   const binPath = path.resolve(root, EMBEDDINGS_BIN_KEY)
@@ -172,6 +206,8 @@ function average(values) {
 
 export function summarize(rows) {
   const positive = rows.filter(row => row.metrics.has_relevant)
+  const unreachable = positive.filter(row => Array.isArray(row.gold_missing) && row.gold_missing.length > 0
+    && row.gold_rank === null)
   const negative = rows.filter(row => !row.metrics.has_relevant)
   return {
     cases: rows.length,
@@ -187,6 +223,10 @@ export function summarize(rows) {
     p50_latency_ms: percentile(rows.map(row => row.latency_ms), 0.50),
     p95_latency_ms: percentile(rows.map(row => row.latency_ms), 0.95),
     forbidden_hits: rows.reduce((sum, row) => sum + row.metrics.forbidden_hits.length, 0),
+    // Cases whose every expected repository is absent from the corpus (renamed, deleted or never
+    // ingested). They cap recall regardless of ranking quality and must be fixed in the fixture.
+    unreachable_gold_cases: unreachable.length,
+    unreachable_gold_ids: unreachable.map(row => row.id),
   }
 }
 
@@ -297,9 +337,10 @@ export function percentile(values, q) {
   return sorted[Math.min(sorted.length - 1, rank - 1)]
 }
 
-async function runMode(name, fixture, documents, { lexicalOnly, k }) {
+async function runMode(name, fixture, documents, { lexicalOnly, k, aliases = {}, corpusNames = new Set() }) {
   const rows = []
   for (const scenario of fixture.cases) {
+    const relevant = canonicalExpected(scenario.relevant, aliases)
     const started = performance.now()
     const queryVector = lexicalOnly || hasHardRequirements(scenario.query, defaultIntents)
       ? null
@@ -317,9 +358,13 @@ async function runMode(name, fixture, documents, { lexicalOnly, k }) {
         ? scenario.classes
         : (scenario.class ? [scenario.class] : ['uncategorized']),
       returned,
+      // Diagnostics: a gold repository that was renamed (or dropped) is unreachable no matter how
+      // good the ranker is, so it must be visible instead of hiding inside a recall number.
+      gold_missing: relevant.filter(repo => !corpusNames.has(repo)),
+      gold_rank: goldRank(returned, new Set(relevant)),
       metrics: {
-        ...evaluateOne(returned, scenario.relevant || [], scenario.forbidden || [], k),
-        ...evidenceQuality(results, scenario.relevant || [], k),
+        ...evaluateOne(returned, relevant, canonicalExpected(scenario.forbidden, aliases), k),
+        ...evidenceQuality(results, relevant, k),
       },
       latency_ms: Number((performance.now() - started).toFixed(1)),
     })
@@ -355,11 +400,14 @@ export async function main() {
   const harvested = loadHarvested(root)
   const vectors = lexicalOnly ? { values: null, norms: null, records: null } : loadVectors(root)
   const documents = { catalog, rankings, assetIndex, harvested, vectors, intents: defaultIntents }
+  const aliases = readJson(path.join(root, 'data/benchmark-aliases.json'), {})
+  const corpusNames = corpusRepoKeys(catalog, assetIndex)
 
   const reports = []
-  reports.push(await runMode('lexical', fixture, { ...documents, vectors: { values: null, norms: null, records: null } }, { lexicalOnly: true, k }))
+  reports.push(await runMode('lexical', fixture, { ...documents, vectors: { values: null, norms: null, records: null } },
+    { lexicalOnly: true, k, aliases, corpusNames }))
   if (!lexicalOnly)
-    reports.push(await runMode('hybrid_bge_m3', fixture, documents, { lexicalOnly: false, k }))
+    reports.push(await runMode('hybrid_bge_m3', fixture, documents, { lexicalOnly: false, k, aliases, corpusNames }))
 
   const qualityGate = fixture.thresholds ? evaluateThresholds(reports, fixture.thresholds) : null
   if (enforceThresholds && !qualityGate)
@@ -389,6 +437,11 @@ export async function main() {
 
   if (enforceThresholds && !qualityGate.passed) {
     console.error(`Retrieval quality gate failed: ${qualityGate.failures.join('; ')}`)
+    const unreachable = reports[0]?.summary?.unreachable_gold_ids || []
+    if (unreachable.length > 0) {
+      console.error(`Unreachable gold cases (expected repository missing from the corpus, usually a rename): ${unreachable.join(', ')}.`)
+      console.error('Add old->new full names to data/benchmark-aliases.json instead of lowering thresholds.')
+    }
     process.exitCode = 2
   }
 }
