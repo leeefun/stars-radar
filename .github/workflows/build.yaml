@@ -186,14 +186,17 @@ jobs:
           cp "${RUNNER_TEMP}/readmes.json" previous-readmes.json
           node scripts/restore_readme_corpus.js "${RUNNER_TEMP}/readmes.json" > "${RUNNER_TEMP}/readmes.tsv"
 
-          # The corpus is ~20 MB across ~1,200 objects averaging 17 KB, so the cost of restoring it
-          # was never bandwidth: one `aws s3 cp` per blob spent most of its life in CLI startup and
-          # TLS handshake, and 1,137 of them serialised behind a 16-way fan-out took ~5.6 min.
-          #
-          # `s3 sync` moves the whole prefix in a single process with its own transfer pool, then
-          # the blobs are renamed into the `<owner>/<repo>.md` layout the pipeline expects. The
-          # rename is a filesystem move, not a transfer: the bytes come down once, in one pass.
-          aws s3 sync "s3://${R2_BUCKET}/readmes/" "${RUNNER_TEMP}/readme-blobs/"             --endpoint-url "${endpoint}" --only-show-errors
+          # Download only the blobs this generation references. The `readmes/` prefix is
+          # content-addressed and append-only, so syncing the whole prefix transfers every blob any
+          # retained generation ever wrote, and the step keeps getting slower as history grows (the
+          # 2026-11 run spent >30 min here and never finished). Bounded work plus a wider fan-out
+          # keeps the step proportional to the corpus instead of to its history.
+          export R2_BUCKET endpoint
+          aws configure set default.s3.max_concurrent_requests 32
+          mkdir -p "${RUNNER_TEMP}/readme-blobs"
+          timeout 1200 xargs -0 -r -P 32 -n 2 bash -c '
+            aws s3 cp "s3://${R2_BUCKET}/$0" "$1" --endpoint-url "${endpoint}" --only-show-errors
+          ' < <(awk -F '\t' -v dir="${RUNNER_TEMP}/readme-blobs" '{n=split($1,p,"/"); printf "%s%c%s%c", $1, 0, dir"/"p[n], 0}' "${RUNNER_TEMP}/readmes.tsv")
 
           node --input-type=module - "${RUNNER_TEMP}/readmes.tsv" "${RUNNER_TEMP}/readme-blobs" <<'NODE'
           import fs from 'node:fs'
