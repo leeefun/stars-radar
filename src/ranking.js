@@ -129,7 +129,18 @@ export function fuseRankings({
   addSemanticRanking(readmeVectorScores, 'readmeVScore')
 
   const sortedKeywords = [...keywordScores.entries()].sort((a, b) => b[1].weight - a[1].weight)
-  sortedKeywords.forEach(([repo, meta], rank) => {
+  // Keyword weights are coarse (40 / 8 / 5 per matched subject, token and intent), so a larger
+  // corpus produces larger tie groups. Ranking those ties by array position hands the best rank to
+  // whichever repository happens to be scanned first and buries equally strong matches deeper down
+  // the list; every member of a tie group gets the same rank instead, so RRF measures evidence and
+  // not scan order. Semantic planes use continuous cosines and keep their own positions.
+  let tieRank = 0
+  let tieWeight = null
+  sortedKeywords.forEach(([repo, meta], index) => {
+    if (meta.weight !== tieWeight) {
+      tieWeight = meta.weight
+      tieRank = index
+    }
     const cur = rrfMap.get(repo) || {
       rrf: 0,
       vScore: 0,
@@ -145,7 +156,7 @@ export function fuseRankings({
       readmeKeywordEvidence: meta.readmeEvidence,
     }
     const isStarred = !!repos[repo] || meta.tier === 'starred' || meta.source === 'starred'
-    cur.rrf += 1 / (RRF_K + rank + 1)
+    cur.rrf += 1 / (RRF_K + tieRank + 1)
     cur.kwWeight = meta.weight
     cur.source = meta.source
     cur.badge = meta.badge || (isStarred ? '⭐ Starred' : '🌐 Public Ranking')

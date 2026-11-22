@@ -52,8 +52,10 @@ test('keyword rank follows keyword weight without source-specific boosts', () =>
     ]),
   })
   assert.equal(map.get('heavy/repo').rrf, 1 / 61)
+  // Equal weights are one tie group: both repositories take the tied rank, so provenance cannot
+  // reorder them by insertion order.
   assert.equal(map.get('me/starred').rrf, 1 / 62)
-  assert.equal(map.get('them/community').rrf, 1 / 63)
+  assert.equal(map.get('them/community').rrf, 1 / 62)
 })
 
 test('a semantic match does not rewrite a public repository source', () => {
@@ -127,4 +129,17 @@ test('ordinary feature queries are not gated by an arbitrary semantic threshold'
     repos,
   })
   assert.equal(weak.has('me/storage'), true)
+})
+
+test('equal keyword weights share one rank instead of following insertion order', () => {
+  const map = fuse({
+    keywordScores: new Map([
+      ['a/one', { weight: 16, source: 'starred', tier: 'starred' }],
+      ['b/two', { weight: 16, source: 'starred', tier: 'starred' }],
+      ['c/three', { weight: 8, source: 'community', tier: 'community' }],
+    ]),
+  })
+  assert.equal(map.get('a/one').rrf, 1 / (RRF_K + 1))
+  assert.equal(map.get('b/two').rrf, 1 / (RRF_K + 1))
+  assert.equal(map.get('c/three').rrf, 1 / (RRF_K + 3))
 })
