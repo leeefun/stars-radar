@@ -25,6 +25,9 @@ jobs:
       SILICONFLOW_KEY: ${{ secrets.SILICONFLOW_KEY }}
       RETRIEVAL_BENCHMARK_B64: ${{ secrets.RETRIEVAL_BENCHMARK_B64 }}
       GENERATION_RETENTION: 30
+      # 每个仓库在向量语料里至少保留的 README 分块数。语料随 star 增长时预算按仓库数线性扩展，
+      # 避免元数据向量把 README 证据挤薄、导致召回率跌破质量门（见 scripts/vector_pipeline.js）。
+      VECTOR_README_CHUNKS_PER_REPO: 3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

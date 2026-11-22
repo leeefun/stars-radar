@@ -54,6 +54,27 @@ export const VECTOR_CORPUS_MAX_RECORDS = Number.isInteger(configuredVectorBudget
   ? configuredVectorBudget
   : 10000
 
+// The starred corpus keeps growing, but every repository costs one mandatory metadata vector. Once
+// the metadata vectors reach VECTOR_CORPUS_MAX_RECORDS, the README chunks that used to fill the
+// budget get pushed out: average README evidence per repository drops (2.24 -> 1.83 chunks between
+// 3,087 and 3,538 repositories), and retrieval recall falls with it. Scale the budget with the
+// repository count so README evidence stays at a fixed depth instead of silently thinning.
+const configuredReadmeDepth = Number.parseInt(process.env.VECTOR_README_CHUNKS_PER_REPO || '', 10)
+export const VECTOR_README_CHUNKS_PER_REPO = Number.isInteger(configuredReadmeDepth) && configuredReadmeDepth > 0
+  ? configuredReadmeDepth
+  : 3
+// A runaway star list must not turn into an unbounded embedding bill; the hard limit caps the
+// derived budget and is logged verbatim in the build report when it binds.
+const configuredHardLimit = Number.parseInt(process.env.VECTOR_CORPUS_HARD_LIMIT || '', 10)
+export const VECTOR_CORPUS_HARD_LIMIT = Number.isInteger(configuredHardLimit) && configuredHardLimit > 0
+  ? configuredHardLimit
+  : 40000
+
+export function vectorBudgetFor(repositoryCount) {
+  const scaled = repositoryCount * (1 + VECTOR_README_CHUNKS_PER_REPO)
+  return Math.min(VECTOR_CORPUS_HARD_LIMIT, Math.max(repositoryCount, VECTOR_CORPUS_MAX_RECORDS, scaled))
+}
+
 function readLocalReadme(repo) {
   const file = path.resolve(PROJECT_ROOT, localReadmePath(repo))
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : ''
@@ -109,7 +130,7 @@ function desiredRows(repositories) {
   const groups = [...byRepo.values()].map(repositoryVectorRows)
   const rows = groups.map(group => group[0]).filter(Boolean)
   const readmeGroups = groups.map(group => group.slice(1))
-  const budget = Math.max(rows.length, VECTOR_CORPUS_MAX_RECORDS)
+  const budget = vectorBudgetFor(rows.length)
 
   // Metadata vectors are mandatory. README capacity is distributed round-robin by selected depth
   // so one giant README cannot consume the corpus budget before other repositories get evidence.
@@ -266,7 +287,9 @@ export async function buildRepositoryVectors(repositories) {
     totalVectors: outputRecords.length,
     repoVectors: outputRecords.filter(record => record.kind === 'repo').length,
     readmeChunkVectors: outputRecords.filter(record => record.kind === 'readme_chunk').length,
-    vectorBudgetRecords: VECTOR_CORPUS_MAX_RECORDS,
+    vectorBudgetRecords: vectorBudgetFor(outputRecords.filter(record => record.kind === 'repo').length),
+    vectorBudgetFloor: VECTOR_CORPUS_MAX_RECORDS,
+    readmeChunksPerRepo: VECTOR_README_CHUNKS_PER_REPO,
     elapsedMs: Number((performance.now() - started).toFixed(1)),
   }
 }
