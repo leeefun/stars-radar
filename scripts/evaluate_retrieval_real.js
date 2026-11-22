@@ -344,12 +344,17 @@ async function runMode(name, fixture, documents, { lexicalOnly, k, aliases = {},
     const queryVector = lexicalOnly || hasHardRequirements(scenario.query, defaultIntents)
       ? null
       : await embedQuery(scenario.query)
+    // Rank beyond k as well: a gold repository that lands at 11-30 is a ranking problem, while one
+    // that never appears is a corpus problem. Without this the two are indistinguishable and both
+    // read as "recall dropped".
+    const probeLimit = Math.max(k * 5, 50, scenario.options?.limit || 0)
     const results = searchDocuments(
       { ...documents, queryVector },
       scenario.query,
-      { ...(scenario.options || {}), limit: Math.max(k, scenario.options?.limit || 0), explain: true },
+      { ...(scenario.options || {}), limit: probeLimit, explain: true },
     )
-    const returned = results.map(result => result.repo)
+    const returned = results.slice(0, k).map(result => result.repo)
+    const ranked = results.map(result => result.repo)
     rows.push({
       id: scenario.id,
       query: scenario.query,
@@ -360,7 +365,7 @@ async function runMode(name, fixture, documents, { lexicalOnly, k, aliases = {},
       // Diagnostics: a gold repository that was renamed (or dropped) is unreachable no matter how
       // good the ranker is, so it must be visible instead of hiding inside a recall number.
       gold_missing: relevant.filter(repo => !corpusNames.has(repo)),
-      gold_rank: goldRank(returned, new Set(relevant)),
+      gold_rank: goldRank(ranked, new Set(relevant)),
       metrics: {
         ...evaluateOne(returned, relevant, canonicalExpected(scenario.forbidden, aliases), k),
         ...evidenceQuality(results, relevant, k),
