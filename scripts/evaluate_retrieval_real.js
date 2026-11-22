@@ -86,7 +86,6 @@ export function corpusRepoKeys(catalog = {}, assetIndex = {}) {
   return keys
 }
 
-
 function loadVectors(root) {
   const indexPath = path.resolve(root, EMBEDDINGS_INDEX_KEY)
   const binPath = path.resolve(root, EMBEDDINGS_BIN_KEY)
@@ -404,8 +403,7 @@ export async function main() {
   const corpusNames = corpusRepoKeys(catalog, assetIndex)
 
   const reports = []
-  reports.push(await runMode('lexical', fixture, { ...documents, vectors: { values: null, norms: null, records: null } },
-    { lexicalOnly: true, k, aliases, corpusNames }))
+  reports.push(await runMode('lexical', fixture, { ...documents, vectors: { values: null, norms: null, records: null } }, { lexicalOnly: true, k, aliases, corpusNames }))
   if (!lexicalOnly)
     reports.push(await runMode('hybrid_bge_m3', fixture, documents, { lexicalOnly: false, k, aliases, corpusNames }))
 
